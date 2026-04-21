@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Framework</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        header { text-align: center; padding: 30px 0; border-bottom: 1px solid #333; }
+        h1 { color: #00d4ff; font-size: 2.5em; }
+        .subtitle { color: #888; margin-top: 10px; }
+        .main-content { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 30px; }
+        .panel { background: #16213e; border-radius: 10px; padding: 20px; }
+        .panel h2 { color: #00d4ff; margin-bottom: 15px; font-size: 1.2em; }
+        .chat-area { height: 400px; overflow-y: auto; border: 1px solid #333; border-radius: 5px; padding: 15px; margin-bottom: 15px; }
+        .message { margin-bottom: 10px; padding: 10px; border-radius: 5px; }
+        .message.user { background: #0f3460; text-align: right; }
+        .message.agent { background: #1a1a2e; border: 1px solid #00d4ff; }
+        .message.image { background: #1a2e3e; border: 1px solid #ff9900; }
+        .message .image-preview { max-width: 300px; max-height: 200px; border-radius: 8px; margin-top: 5px; }
+        .input-group { display: flex; gap: 10px; flex-wrap: wrap; }
+        input[type="text"] { flex: 1; min-width: 200px; padding: 12px; border-radius: 5px; border: 1px solid #333; background: #0f3460; color: #fff; }
+        button { padding: 12px 24px; background: #00d4ff; border: none; border-radius: 5px; color: #1a1a2e; font-weight: bold; cursor: pointer; }
+        button:hover { background: #00a8cc; }
+        button.image-btn { background: #ff9900; }
+        button.image-btn:hover { background: #ff7700; }
+        .image-upload-area { display: none; gap: 10px; margin-top: 10px; padding: 10px; background: #0f3460; border-radius: 5px; }
+        .image-upload-area.active { display: flex; }
+        .image-preview-container { position: relative; display: inline-block; }
+        .image-preview-container img { max-width: 200px; max-height: 150px; border-radius: 5px; }
+        .remove-image { position: absolute; top: -5px; right: -5px; background: #ff4444; color: white; border: none; border-radius: 50%; width: 20px; height: 20px; cursor: pointer; font-size: 12px; }
+        .status { display: flex; justify-content: space-between; margin-top: 20px; padding: 15px; background: #16213e; border-radius: 5px; }
+        .status-item { text-align: center; }
+        .status-value { font-size: 1.5em; color: #00d4ff; }
+        .status-label { color: #888; font-size: 0.8em; }
+        .tools-list, .agents-list { max-height: 200px; overflow-y: auto; }
+        .tool-item, .agent-item { padding: 8px; border-bottom: 1px solid #333; }
+        .tool-item:last-child, .agent-item:last-child { border-bottom: none; }
+        .create-agent { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
+        .create-agent input { flex: 1; min-width: 120px; padding: 10px; border-radius: 5px; border: 1px solid #333; background: #0f3460; color: #fff; }
+        .create-agent select { padding: 10px; border-radius: 5px; border: 1px solid #333; background: #0f3460; color: #fff; min-width: 100px; }
+        .mode-display { display: flex; align-items: center; gap: 10px; margin-top: 15px; padding: 10px; background: #0f3460; border-radius: 5px; }
+        .mode-display select { padding: 8px; border-radius: 5px; border: 1px solid #333; background: #16213e; color: #fff; }
+        .agent-item { display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid #333; }
+        .agent-item:last-child { border-bottom: none; }
+        .agent-info { display: flex; flex-direction: column; gap: 2px; }
+        .agent-name { font-weight: bold; }
+        .agent-mode { font-size: 0.8em; color: #888; }
+        .delete-btn { background: #ff4444; padding: 5px 10px; font-size: 0.8em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🤖 Agent Framework</h1>
+            <p class="subtitle">模块化智能Agent系统 - 支持CLI、Web UI、Docker沙箱、MCP、图片理解</p>
+        </header>
+
+        <div class="main-content">
+            <div class="panel">
+                <h2>💬 对话</h2>
+                <div class="chat-area" id="chatArea">
+                    <div class="message agent">欢迎使用Agent Framework！可以发送文字或图片进行对话。</div>
+                </div>
+
+                <div class="input-group">
+                    <input type="text" id="promptInput" placeholder="输入你的prompt..." onkeypress="handleKeyPress(event)">
+                    <button onclick="sendMessage()">发送</button>
+                    <input type="file" id="imageInput" accept="image/*" onchange="handleImageSelect(event)" style="display: none;">
+                    <button class="image-btn" onclick="document.getElementById('imageInput').click()">📷 图片</button>
+                </div>
+
+                <div class="image-preview-bar" id="imagePreviewBar" style="display: none; gap: 10px; margin-top: 10px; padding: 10px; background: #0f3460; border-radius: 5px; align-items: center;">
+                    <span id="imagePreviewName" style="flex: 1; color: #888;"></span>
+                    <button onclick="clearSelectedImage()" style="background: #ff4444; padding: 5px 10px; font-size: 0.8em;">移除</button>
+                    <button onclick="sendWithImage()" style="background: #44ff44; padding: 5px 10px; font-size: 0.8em;">发送图片+文字</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>🎛️ 控制面板</h2>
+
+                <h3 style="color: #00d4ff; margin: 15px 0 10px;">创建Agent</h3>
+                <div class="create-agent">
+                    <input type="text" id="agentName" placeholder="Agent名称" value="my-agent">
+                    <select id="agentMode">
+                        <option value="simple">simple</option>
+                        <option value="deep">deep</option>
+                        <option value="plan">plan</option>
+                        <option value="debug">debug</option>
+                    </select>
+                    <button onclick="createAgent()">创建</button>
+                </div>
+
+                <h3 style="color: #00d4ff; margin: 15px 0 10px;">切换Mode</h3>
+                <div class="mode-display">
+                    <span>当前Mode:</span>
+                    <select id="currentMode">
+                        <option value="simple">simple</option>
+                        <option value="deep">deep</option>
+                        <option value="plan">plan</option>
+                        <option value="debug">debug</option>
+                    </select>
+                    <button onclick="changeMode()">切换</button>
+                </div>
+
+                <h3 style="color: #00d4ff; margin: 15px 0 10px;">状态</h3>
+                <div class="status">
+                    <div class="status-item">
+                        <div class="status-value" id="agentCount">0</div>
+                        <div class="status-label">Agents</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="status-value" id="connectionCount">0</div>
+                        <div class="status-label">连接</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="status-value">v0.1.0</div>
+                        <div class="status-label">版本</div>
+                    </div>
+                </div>
+
+                <h3 style="color: #00d4ff; margin: 15px 0 10px;">活跃Agents</h3>
+                <div class="agent-selector" style="display: flex; gap: 10px; margin-bottom: 10px;">
+                    <select id="agentSelector" style="flex: 1; padding: 10px; border-radius: 5px; border: 1px solid #333; background: #0f3460; color: #fff;">
+                    </select>
+                    <button onclick="switchToSelectedAgent()">切换</button>
+                </div>
+                <div class="agents-list" id="agentsList"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let clientId = localStorage.getItem('clientId') || 'client-' + Math.random().toString(36).substr(2, 9);
+        let selectedImage = null;
+        let selectedImageBase64 = null;
+        let selectedImageName = null;
+        let currentAgentName = 'my-agent';
+        let currentAgentMode = 'simple';
+
+        // Persist clientId
+        localStorage.setItem('clientId', clientId);
+
+        function connect() {
+            ws = new WebSocket(`ws://${location.host}/ws/${clientId}`);
+            ws.onopen = () => {
+                updateStatus();
+                // Will be called after agent_created response
+            };
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'response') {
+                    // Check if content is a JSON with image data
+                    try {
+                        const parsed = JSON.parse(data.content);
+                        if (parsed.type === 'image' && parsed.image) {
+                            addImageMessage('agent', parsed.message, parsed.image);
+                        } else {
+                            addMessage('agent', data.content);
+                        }
+                    } catch {
+                        addMessage('agent', data.content);
+                    }
+                    saveChatHistory();  // Save after response
+                } else if (data.type === 'image_response') {
+                    addMessage('agent', '图片理解结果: ' + data.content);
+                    saveChatHistory();  // Save after response
+                } else if (data.type === 'agent_created') {
+                    currentAgentName = data.name;
+                    currentAgentMode = data.mode;
+                    document.getElementById('currentMode').value = data.mode;
+                    loadChatHistory(data.name);  // Load this agent's chat history
+                    updateStatus();
+                    saveAgentsToStorage();
+                } else if (data.type === 'mode_changed') {
+                    document.getElementById('currentMode').value = data.mode;
+                    currentAgentMode = data.mode;
+                    addMessage('agent', 'Mode已切换为: ' + data.mode);
+                    saveAgentsToStorage();
+                } else if (data.type === 'error') {
+                    addMessage('agent', '错误: ' + data.message);
+                } else if (data.type === 'agent_list') {
+                    window.savedAgents = data.agents;
+                    updateAgentsList(data.agents, data.current);
+                } else if (data.type === 'agent_deleted') {
+                    addMessage('agent', 'Agent已删除');
+                    updateStatus();  // Refresh agent list
+                    // agent_switched will follow, which will load the new agent's history
+                } else if (data.type === 'agent_switched') {
+                    // Save current agent's chat before switching
+                    saveChatHistory();
+                    currentAgentName = data.name;
+                    currentAgentMode = data.mode;
+                    document.getElementById('currentMode').value = data.mode;
+                    updateAgentSelector(data.name);
+                    updateStatus();  // Refresh agent list
+                    // Load switched agent's chat history
+                    loadChatHistory(data.name);
+                    addMessage('agent', '已切换到Agent: ' + data.name);
+                    saveAgentsToStorage();
+                }
+            };
+            ws.onclose = () => setTimeout(connect, 1000);
+        }
+
+        function addMessage(role, content) {
+            const chatArea = document.getElementById('chatArea');
+            const msg = document.createElement('div');
+            msg.className = 'message ' + role;
+            msg.textContent = content;
+            chatArea.appendChild(msg);
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
+
+        function addImageMessage(role, content, imageData) {
+            const chatArea = document.getElementById('chatArea');
+            const msg = document.createElement('div');
+            msg.className = 'message ' + role;
+            msg.textContent = content;
+            if (imageData) {
+                const img = document.createElement('img');
+                img.src = imageData;
+                img.className = 'image-preview';
+                msg.appendChild(img);
+            }
+            chatArea.appendChild(msg);
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('promptInput');
+            const promptText = input.value.trim();
+
+            if (!promptText && !selectedImageBase64) {
+                alert('请输入内容或选择图片');
+                return;
+            }
+
+            addMessage('user', promptText + (selectedImageBase64 ? ' [发送了图片]' : ''));
+            saveChatHistory();
+            ws.send(JSON.stringify({
+                action: 'think',
+                prompt: promptText,
+                has_image: !!selectedImageBase64,
+                image_data: selectedImageBase64 || null
+            }));
+            input.value = '';
+            clearSelectedImage();
+        }
+
+        function handleKeyPress(e) {
+            if (e.key === 'Enter') sendMessage();
+        }
+
+        function handleImageSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            if (file.size > 10 * 1024 * 1024) {
+                alert('图片大小不能超过10MB');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                selectedImageBase64 = e.target.result;
+                selectedImageName = file.name;
+                // Show preview bar
+                document.getElementById('imagePreviewBar').style.display = 'flex';
+                document.getElementById('imagePreviewName').textContent = '已选图片: ' + file.name;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function clearSelectedImage() {
+            selectedImage = null;
+            selectedImageBase64 = null;
+            selectedImageName = null;
+            document.getElementById('imagePreviewBar').style.display = 'none';
+            document.getElementById('imageInput').value = '';
+        }
+
+        function sendWithImage() {
+            if (!selectedImageBase64) {
+                alert('请先选择图片');
+                return;
+            }
+            sendMessage();
+        }
+
+        function createAgent() {
+            const name = document.getElementById('agentName').value || 'my-agent';
+            const mode = document.getElementById('agentMode').value;
+            ws.send(JSON.stringify({ action: 'create_agent', name: name, mode: mode }));
+        }
+
+        function deleteAgent(name) {
+            if (name === 'my-agent') {
+                addMessage('agent', '默认my-agent不能删除');
+                return;
+            }
+            ws.send(JSON.stringify({ action: 'delete_agent', name: name }));
+        }
+
+        function changeMode() {
+            const mode = document.getElementById('currentMode').value;
+            ws.send(JSON.stringify({ action: 'change_mode', mode: mode }));
+        }
+
+        function updateStatus() {
+            fetch('/api/status').then(r => r.json()).then(data => {
+                document.getElementById('agentCount').textContent = data.agents;
+                document.getElementById('connectionCount').textContent = data.connections;
+            });
+            ws.send(JSON.stringify({ action: 'list_agents' }));
+        }
+
+        function updateAgentsList(agents, current) {
+            const list = document.getElementById('agentsList');
+            list.innerHTML = agents.map(a => `
+                <div class="agent-item" style="${a.name === current ? 'border-left: 3px solid #00d4ff;' : ''}">
+                    <div class="agent-info">
+                        <span class="agent-name">${a.name}${a.name === current ? ' (当前)' : ''}</span>
+                        <span class="agent-mode">${a.mode || 'simple'}</span>
+                    </div>
+                    ${a.name !== 'my-agent' ? `<button class="delete-btn" onclick="deleteAgent('${a.name}')">删除</button>` : ''}
+                </div>
+            `).join('');
+            updateAgentSelector(current);
+            saveAgentsToStorage();
+        }
+
+        function updateAgentSelector(currentAgent) {
+            const select = document.getElementById('agentSelector');
+            const agents = window.savedAgents || [];
+            select.innerHTML = agents.map(a =>
+                `<option value="${a.name}" ${a.name === currentAgent ? 'selected' : ''}>${a.name}</option>`
+            ).join('');
+        }
+
+        function switchToSelectedAgent() {
+            const name = document.getElementById('agentSelector').value;
+            ws.send(JSON.stringify({ action: "switch_agent", name: name }));
+        }
+
+        function saveChatHistory() {
+            const chatArea = document.getElementById('chatArea');
+            const messages = [];
+            chatArea.querySelectorAll('.message').forEach(msg => {
+                messages.push({
+                    role: msg.classList.contains('user') ? 'user' : 'agent',
+                    content: msg.textContent
+                });
+            });
+            // Save per agent
+            localStorage.setItem(`chatHistory_${currentAgentName}`, JSON.stringify(messages));
+            // Also update agent list with last message preview
+            updateAgentLastMessage(currentAgentName, messages);
+        }
+
+        function loadChatHistory(agentName) {
+            const chatHistory = localStorage.getItem(`chatHistory_${agentName}`);
+            const chatArea = document.getElementById('chatArea');
+            chatArea.innerHTML = '';
+            if (chatHistory) {
+                const messages = JSON.parse(chatHistory);
+                messages.forEach(msg => {
+                    const div = document.createElement('div');
+                    div.className = 'message ' + msg.role;
+                    div.textContent = msg.content;
+                    chatArea.appendChild(div);
+                });
+            }
+            chatArea.scrollTop = chatArea.scrollHeight;
+            return chatHistory ? JSON.parse(chatHistory) : [];
+        }
+
+        function updateAgentLastMessage(agentName, messages) {
+            let agentsMeta = JSON.parse(localStorage.getItem('agentsMeta') || '{}');
+            if (messages.length > 0) {
+                const lastMsg = messages[messages.length - 1];
+                const preview = lastMsg.content.substring(0, 30) + (lastMsg.content.length > 30 ? '...' : '');
+                agentsMeta[agentName] = { lastMessage: preview, timestamp: Date.now() };
+            }
+            localStorage.setItem('agentsMeta', JSON.stringify(agentsMeta));
+        }
+
+        function getAgentsMeta() {
+            return JSON.parse(localStorage.getItem('agentsMeta') || '{}');
+        }
+
+        function saveAgentsToStorage() {
+            localStorage.setItem('currentAgent', JSON.stringify({
+                name: currentAgentName,
+                mode: currentAgentMode,
+                agents: window.savedAgents || []
+            }));
+        }
+
+        function loadAgentFromStorage() {
+            const saved = localStorage.getItem('currentAgent');
+            if (saved) {
+                const agent = JSON.parse(saved);
+                currentAgentName = agent.name;
+                currentAgentMode = agent.mode;
+                document.getElementById('currentMode').value = agent.mode;
+            }
+        }
+
+        // Load saved agent info on page load
+        loadAgentFromStorage();
+        connect();
+    </script>
+</body>
+</html>
