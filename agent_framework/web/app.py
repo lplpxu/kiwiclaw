@@ -12,6 +12,7 @@ app = FastAPI(title="Agent Framework Web UI")
 # Store active connections
 connections: dict[str, WebSocket] = {}
 agents: dict[str, dict] = {}
+thinking_tasks: dict[str, asyncio.Task] = {}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -98,6 +99,12 @@ async def handle_agent_message(client_id: str, data: dict, websocket: WebSocket)
         if client_id not in agents or agents[client_id]["_current"] not in agents[client_id]:
             await websocket.send_json({"type": "error", "message": "Agent not found"})
             return
+
+        # Cancel existing task if any
+        if client_id in thinking_tasks and not thinking_tasks[client_id].done():
+            thinking_tasks[client_id].cancel()
+            await websocket.send_json({"type": "agent_status", "content": "已取消之前的任务..."})
+
         current_name = agents[client_id]["_current"]
         prompt = data.get("prompt", "")
         has_image = data.get("has_image", False)
@@ -108,6 +115,7 @@ async def handle_agent_message(client_id: str, data: dict, websocket: WebSocket)
         # If image is provided, add to agent messages for context, then handle separately
         if has_image and image_data:
             try:
+                await websocket.send_json({"type": "agent_status", "content": "正在理解图片..."})
                 # Save image info to agent messages for context persistence
                 image_msg = {
                     "role": "user",
@@ -122,11 +130,32 @@ async def handle_agent_message(client_id: str, data: dict, websocket: WebSocket)
             except Exception as e:
                 await websocket.send_json({"type": "error", "message": str(e)})
         else:
-            try:
-                result = await agent.think(prompt)
-                await websocket.send_json({"type": "response", "content": result})
-            except Exception as e:
-                await websocket.send_json({"type": "error", "message": str(e)})
+            async def send_status(status_msg):
+                try:
+                    await websocket.send_json({"type": "agent_status", "content": status_msg})
+                except Exception as e:
+                    print(f"Error sending status: {e}")
+
+            async def run_think():
+                try:
+                    result = await agent.think(prompt, status_callback=send_status)
+                    await websocket.send_json({"type": "response", "content": result})
+                except asyncio.CancelledError:
+                    await websocket.send_json({"type": "agent_status", "content": "思考已取消"})
+                except Exception as e:
+                    await websocket.send_json({"type": "error", "message": str(e)})
+                finally:
+                    if client_id in thinking_tasks:
+                        del thinking_tasks[client_id]
+
+            thinking_tasks[client_id] = asyncio.create_task(run_think())
+
+    elif action == "cancel":
+        if client_id in thinking_tasks and not thinking_tasks[client_id].done():
+            thinking_tasks[client_id].cancel()
+            await websocket.send_json({"type": "agent_status", "content": "正在取消..."})
+        else:
+            await websocket.send_json({"type": "agent_status", "content": "没有正在运行的任务"})
 
     elif action == "image_understand":
         # Handle image understanding via MiniMax API
@@ -143,6 +172,7 @@ async def handle_agent_message(client_id: str, data: dict, websocket: WebSocket)
         query = data.get("query", "")
         num_results = data.get("num_results", 5)
         try:
+            await websocket.send_json({"type": "agent_status", "content": f"正在搜索: {query[:30]}..."})
             result = await handle_web_search(query, num_results)
             await websocket.send_json({"type": "search_response", "content": result})
         except Exception as e:

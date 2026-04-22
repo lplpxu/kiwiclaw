@@ -61,6 +61,9 @@
         <div class="main-content">
             <div class="panel">
                 <h2>💬 对话</h2>
+                <div class="status-indicator" id="statusIndicator" style="display: none; padding: 8px 12px; background: #1a4a6e; border-radius: 5px; margin-bottom: 10px; color: #00d4ff; font-size: 0.9em;">
+                    <span id="statusText">思考中...</span>
+                </div>
                 <div class="chat-area" id="chatArea">
                     <div class="message agent">欢迎使用Agent Framework！可以发送文字或图片进行对话。</div>
                 </div>
@@ -68,6 +71,7 @@
                 <div class="input-group">
                     <input type="text" id="promptInput" placeholder="输入你的prompt..." onkeypress="handleKeyPress(event)">
                     <button onclick="sendMessage()">发送</button>
+                    <button onclick="cancelThink()" id="cancelBtn" style="display: none; background: #ff4444;">停止</button>
                     <input type="file" id="imageInput" accept="image/*" onchange="handleImageSelect(event)" style="display: none;">
                     <button class="image-btn" onclick="document.getElementById('imageInput').click()">📷 图片</button>
                 </div>
@@ -149,10 +153,15 @@
             ws = new WebSocket(`ws://${location.host}/ws/${clientId}`);
             ws.onopen = () => {
                 updateStatus();
-                // Will be called after agent_created response
             };
+            ws.onclose = () => setTimeout(connect, 1000);
             ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
+                let data;
+                try {
+                    data = JSON.parse(event.data);
+                } catch (e) {
+                    return;
+                }
                 if (data.type === 'response') {
                     // Check if content is a JSON with image data
                     try {
@@ -165,10 +174,20 @@
                     } catch {
                         addMessage('agent', data.content);
                     }
+                    clearStatusIndicator();
+                    document.getElementById('cancelBtn').style.display = 'none';
                     saveChatHistory();  // Save after response
                 } else if (data.type === 'image_response') {
+                    clearStatusIndicator();
+                    document.getElementById('cancelBtn').style.display = 'none';
                     addMessage('agent', '图片理解结果: ' + data.content);
                     saveChatHistory();  // Save after response
+                } else if (data.type === 'agent_status') {
+                    showStatusIndicator(data.content);
+                } else if (data.type === 'search_response') {
+                    clearStatusIndicator();
+                    addMessage('agent', '搜索结果:\n' + data.content);
+                    saveChatHistory();
                 } else if (data.type === 'agent_created') {
                     currentAgentName = data.name;
                     currentAgentMode = data.mode;
@@ -182,6 +201,8 @@
                     addMessage('agent', 'Mode已切换为: ' + data.mode);
                     saveAgentsToStorage();
                 } else if (data.type === 'error') {
+                    clearStatusIndicator();
+                    document.getElementById('cancelBtn').style.display = 'none';
                     addMessage('agent', '错误: ' + data.message);
                 } else if (data.type === 'agent_list') {
                     window.savedAgents = data.agents;
@@ -231,6 +252,20 @@
             chatArea.scrollTop = chatArea.scrollHeight;
         }
 
+        function showStatusIndicator(text) {
+            const indicator = document.getElementById('statusIndicator');
+            const statusText = document.getElementById('statusText');
+            if (indicator && statusText) {
+                indicator.style.display = 'block';
+                statusText.textContent = text;
+            }
+        }
+
+        function clearStatusIndicator() {
+            const indicator = document.getElementById('statusIndicator');
+            indicator.style.display = 'none';
+        }
+
         function sendMessage() {
             const input = document.getElementById('promptInput');
             const promptText = input.value.trim();
@@ -250,6 +285,11 @@
             }));
             input.value = '';
             clearSelectedImage();
+            document.getElementById('cancelBtn').style.display = 'inline-block';
+        }
+
+        function cancelThink() {
+            ws.send(JSON.stringify({ action: 'cancel' }));
         }
 
         function handleKeyPress(e) {
