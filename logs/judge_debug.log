@@ -180,3 +180,5 @@
 [2026-04-25 15:55:19] LLM called judge_tool with verdict=pass, confidence=0.85
 [2026-04-25 22:24:42] run_judge called: tool_results len=243, user_prompt len=2
 [2026-04-25 22:24:50] LLM called judge_tool with verdict=pass, confidence=1
+[2026-04-25 22:42:18] run_judge called: tool_results len=128, user_prompt len=2
+[2026-04-25 22:42:37] LLM called judge_tool with verdict=pass, confidence=1
