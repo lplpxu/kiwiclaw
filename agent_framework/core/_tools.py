@@ -23,9 +23,38 @@ def safe_path(p: str) -> Path:
 
 
 def run_bash(command: str) -> str:
-    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
-    if any(d in command for d in dangerous):
-        return "Error: Dangerous command blocked"
+    """Execute a bash command with security checks.
+
+    Security checks:
+    - Pattern-based dangerous command detection (60+ patterns)
+    - Per-session and permanent allowlists
+    - Smart approval via LLM for uncertain cases
+    - YOLO bypass mode
+
+    Args:
+        command: The shell command to execute
+
+    Returns:
+        Command output or error message
+    """
+    # Import here to avoid circular dependency
+    try:
+        from .security import check_bash_security
+    except ImportError:
+        # Fallback to old behavior if security module not available
+        dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
+        if any(d in command for d in dangerous):
+            return "Error: Dangerous command blocked"
+
+    # Check security - get session key from environment if available
+    session_key = os.getenv("AGENT_SESSION_KEY", "default")
+    approved, error_msg = check_bash_security(command, session_key=session_key)
+
+    if not approved:
+        print(f"[DEBUG bash] blocked: {error_msg}")
+        return f"Error: {error_msg}"
+
+    # Execute command
     try:
         r = subprocess.run(command, shell=True, cwd=WORKDIR,
                            capture_output=True, text=True, timeout=120)
@@ -33,6 +62,8 @@ def run_bash(command: str) -> str:
         return out[:50000] if out else "(no output)"
     except subprocess.TimeoutExpired:
         return "Error: Timeout (120s)"
+    except Exception as e:
+        return f"Error: {e}"
 
 
 def run_read(path: str, limit: int = None) -> str:
@@ -118,7 +149,20 @@ def _to_markdown(html_text: str) -> str:
 
 
 def run_web_search(query: str, num_results: int = 5) -> str:
-    """MiniMax web search - Search the internet for information."""
+    """MiniMax web search - Search the internet for information.
+
+    Note: This function returns search result metadata only (URLs, titles, descriptions).
+    To get full content from specific URLs, use web_fetch tool after search.
+    For structured data (e.g., flight schedules, prices), always follow up with web_fetch
+    to retrieve and parse the actual page content.
+
+    错误分类:
+    - [FATAL_ERROR] 搜索API不可用 -> 请改用其他方式或告知用户
+    - 错误: 未设置API密钥 -> 检查环境变量
+    - 错误: 搜索请求超时 -> 可以重试
+    """
+    print(f"[DEBUG web_search] query={query}, num_results={num_results}")
+
     minimax_key = os.getenv("MINIMAX_API_KEY", "")
     auth_token = os.getenv("ANTHROPIC_AUTH_TOKEN", "")
 
@@ -133,6 +177,7 @@ def run_web_search(query: str, num_results: int = 5) -> str:
         return "错误: 未设置API密钥"
 
     try:
+        start_time = time.time()
         with httpx.Client() as client:
             response = client.post(
                 f"{base_url}/v1/coding_plan/search",
@@ -143,26 +188,29 @@ def run_web_search(query: str, num_results: int = 5) -> str:
                 json={"q": query},
                 timeout=30.0
             )
+        duration = time.time() - start_time
+        print(f"[DEBUG web_search] response.status={response.status_code}, duration={duration:.2f}s")
 
-            if response.status_code != 200:
-                return f"错误: API返回 {response.status_code} - {response.text[:200]}"
+        if response.status_code != 200:
+            return f"错误: API返回 {response.status_code} - {response.text[:200]}"
 
-            result = response.json()
-            base_resp = result.get("base_resp", {})
-            if base_resp.get("status_code") != 0:
-                error_msg = base_resp.get('status_msg', '未知错误')
-                return f"[FATAL_ERROR] 搜索API不可用: {error_msg}，请改用其他方式获取信息或告诉用户搜索功能暂时不可用"
-            organic = result.get("organic", [])
-            if not organic:
-                return "未找到相关结果"
+        result = response.json()
+        base_resp = result.get("base_resp", {})
+        if base_resp.get("status_code") != 0:
+            error_msg = base_resp.get('status_msg', '未知错误')
+            return f"[FATAL_ERROR] 搜索API不可用: {error_msg}，请改用其他方式获取信息或告诉用户搜索功能暂时不可用"
+        organic = result.get("organic", [])
+        if not organic:
+            return "未找到相关结果"
 
-            lines = []
-            for i, item in enumerate(organic[:num_results], 1):
-                title = _strip_tags(item.get("title", "无标题"))
-                link = item.get("link", "")
-                snippet = _strip_tags(item.get("snippet", ""))[:200]
-                lines.append(f"{i}. {title}\n   {link}\n   {snippet}\n")
-            return "\n".join(lines)
+        lines = []
+        for i, item in enumerate(organic[:num_results], 1):
+            title = _strip_tags(item.get("title", "无标题"))
+            link = item.get("link", "")
+            snippet = _strip_tags(item.get("snippet", ""))[:200]
+            lines.append(f"{i}. {title}\n   {link}\n   {snippet}\n")
+        print(f"[DEBUG web_search] 返回 {len(lines)} 条结果")
+        return "\n".join(lines)
 
     except httpx.TimeoutException:
         return "错误: 搜索请求超时"
@@ -172,14 +220,19 @@ def run_web_search(query: str, num_results: int = 5) -> str:
 
 def run_web_fetch(url: str, max_chars: int = 50000) -> str:
     """Fetch URL and extract readable content."""
+    print(f"[DEBUG web_fetch] url={url}, max_chars={max_chars}")
+
     is_valid, error_msg = _validate_url(url)
     if not is_valid:
         return f"URL验证失败: {error_msg}"
 
     try:
+        start_time = time.time()
         with httpx.Client(follow_redirects=True, max_redirects=MAX_REDIRECTS, timeout=30.0) as client:
             r = client.get(url, headers={"User-Agent": USER_AGENT})
             r.raise_for_status()
+        duration = time.time() - start_time
+        print(f"[DEBUG web_fetch] status={r.status_code}, final_url={r.url}, duration={duration:.2f}s")
 
         ctype = r.headers.get("content-type", "")
 
@@ -201,7 +254,7 @@ def run_web_fetch(url: str, max_chars: int = 50000) -> str:
         if truncated:
             text = text[:max_chars]
 
-        return json.dumps({
+        result = json.dumps({
             "url": url,
             "finalUrl": str(r.url),
             "status": r.status_code,
@@ -210,6 +263,9 @@ def run_web_fetch(url: str, max_chars: int = 50000) -> str:
             "length": len(text),
             "text": text
         }, ensure_ascii=False)
+
+        print(f"[DEBUG web_fetch] 返回长度={len(result)}, truncated={truncated}")
+        return result
 
     except httpx.TimeoutException:
         return f"错误: 请求超时"
@@ -233,17 +289,34 @@ def judge_tool(pass_: bool, advice: str = "") -> str:
     return json.dumps({"pass": pass_, "verdict": "pass" if pass_ else "fail", "advice": advice})
 
 
-# judge tool schema for LLM
+# judge tool schema for LLM (Enhanced with verdict types)
 JUDGE_TOOL_SCHEMA = {
     "name": "judge_tool",
     "description": "Report whether the tool results successfully solved the user's problem, and provide advice if not solved.",
     "input_schema": {
         "type": "object",
         "properties": {
-            "pass": {"type": "boolean", "description": "True if solved, False if not solved"},
-            "advice": {"type": "string", "description": "Advice or suggestions for what to do next if pass=False"}
+            "verdict": {
+                "type": "string",
+                "enum": ["pass", "partial", "fail", "escalate"],
+                "description": "Judgment verdict: pass=fully solved, partial=partially solved, fail=not solved, escalate=needs human"
+            },
+            "confidence": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0,
+                "description": "Confidence in the verdict (0.0-1.0)"
+            },
+            "advice": {
+                "type": "string",
+                "description": "Next step guidance if not fully solved (empty if verdict=pass)"
+            },
+            "summary": {
+                "type": "string",
+                "description": "Brief explanation of the verdict"
+            }
         },
-        "required": ["pass"]
+        "required": ["verdict", "confidence", "advice", "summary"]
     }
 }
 
@@ -255,12 +328,14 @@ def run_judge(tool_results: str, user_prompt: str) -> tuple[bool, str]:
     pass=True means tool results solved the problem, False means not solved.
     advice contains explanation text that can be shown to the user.
     """
+    print(f"[DEBUG judge] 开始评估 | tool_results_len={len(tool_results)}, user_prompt_len={len(user_prompt)}")
     _write_judge_log(f"run_judge called: tool_results len={len(tool_results)}, user_prompt len={len(user_prompt)}")
 
     auth_token = os.getenv("ANTHROPIC_AUTH_TOKEN", "")
     base_url = os.getenv("ANTHROPIC_API_HOST") or os.getenv("ANTHROPIC_BASE_URL") or "https://api.minimaxi.com/anthropic/"
 
     if not auth_token:
+        print("[DEBUG judge] 无 auth_token，返回 (False, '')")
         _write_judge_log("No auth_token, returning (False, '')")
         return False, ""
 
@@ -269,53 +344,76 @@ def run_judge(tool_results: str, user_prompt: str) -> tuple[bool, str]:
     client = anthropic.Anthropic(api_key=auth_token, base_url=base_url)
 
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    system_prompt = f"""You are a result evaluation assistant.
-[System time: {current_time}]
-Judge from the time, location, people, cause, process, and result whether it meets the user’s requirements.
+    system_prompt = f"""你是一个很严厉的评估员,只有在你没有建议时才会给出 "pass" 的评判, 其他情况都应该给出 "fail" 或 "partial" 的评判, 并且提供详细的改进建议。请严格评估以下工具结果是否完全解决了用户的问题，并给出具体的改进建议（如果没有完全解决）。评估时请考虑以下维度：
 
-You MUST call the judge_tool with:
-- pass=True if the tool results adequately solved the user’s question, leave advice empty
-- pass=False if the tool results did NOT solve the problem, and provide advice/suggestions in the advice field
+## 评估框架
+从以下维度评估是否完成了用户任务,有一个维度不符合及判定为 fail:
+1. **完整性 (Completeness)**: 结果是否完全回答了请求？
+2. **正确性 (Correctness)**: 结果是否是最新的内容，准确有效？
+3. **相关性 (Relevance)**: 结果是否直接针对用户问题，没有偏离任务的内容？
+4. **充分性 (Sufficiency)**: 是否需要额外信息，用户任务描述的隐含内容是否都被覆盖了？
+5. **起因 经过 结果 (Cause-Process-Outcome)**: 结果是否清晰展示了问题的起因、处理过程和最终结果？
 
-Do NOT return text directly - you MUST call judge_tool to report your verdict."""
+## Verdict 类型
+- `pass`: 没有任何建议给pass
+- `fail`: 除pass情况外所有情况都给fail
+
+## 输出要求
+必须调用 judge_tool：
+- verdict: "pass" | "fail"
+- confidence: 0.0-1.0
+- advice: 下一步指导（pass 时为空）
+- summary: 判决简要说明
+
+You MUST call the judge_tool with your verdict."""
 
     try:
         messages = [
             {"role": "user", "content": f"User question: {user_prompt}\n\nTool results:\n{tool_results[:3000]}"}
         ]
 
-        response = client.messages.create(
-            model="MiniMax-M2.7",
-            max_tokens=1000,
-            system=system_prompt,
-            messages=messages,
-            tools=[JUDGE_TOOL_SCHEMA]
-        )
+        max_retries = 5
+        retry_count = 0
 
-        # Check if LLM called judge_tool
-        for block in response.content:
-            if block.type == "tool_use" and block.name == "judge_tool":
-                pass_value = block.input.get("pass", False)
-                advice = block.input.get("advice", "")
-                _write_judge_log(f"LLM called judge_tool with pass={pass_value}, advice={advice[:200] if advice else 'none'}")
-                return pass_value, advice
+        while retry_count < max_retries:
+            start_time = time.time()
+            response = client.messages.create(
+                model="MiniMax-M2.7",
+                max_tokens=1000,
+                system=system_prompt,
+                messages=messages,
+                tools=[JUDGE_TOOL_SCHEMA]
+            )
+            duration = time.time() - start_time
+            print(f"[DEBUG judge] LLM 调用完成 | retry={retry_count}, duration={duration:.2f}s, stop_reason={response.stop_reason}")
 
-        # Fallback: parse text response
-        _write_judge_log("No judge_tool call, parsing text response")
-        advice = ""
-        for block in response.content:
-            if hasattr(block, 'text'):
-                advice = block.text.strip()
-                break
+            # Check if LLM called judge_tool
+            for block in response.content:
+                if block.type == "tool_use" and block.name == "judge_tool":
+                    verdict = block.input.get("verdict", "fail")
+                    confidence = block.input.get("confidence", 0.0)
+                    advice = block.input.get("advice", "")
+                    summary = block.input.get("summary", "")
+                    print(f"[DEBUG judge] LLM verdict={verdict}, confidence={confidence}, advice={advice[:50] if advice else 'empty'}...")
+                    _write_judge_log(f"LLM called judge_tool with verdict={verdict}, confidence={confidence}")
+                    # If advice is non-empty, return False regardless of verdict (has improvement suggestions)
+                    if advice:
+                        return False, advice
+                    return verdict in ("pass", "partial"), advice
 
-        if advice:
-            text_lower = advice.lower()
-            if "pass" in text_lower or "true" in text_lower or "解决" in text_lower or "成功" in text_lower:
-                return True, advice
-            elif "fail" in text_lower or "false" in text_lower or "未解决" in text_lower or "失败" in text_lower:
-                return False, advice
+            # LLM did not call judge_tool, add response to messages and retry
+            retry_count += 1
+            print(f"[DEBUG judge] 未调用 judge_tool，重试 ({retry_count}/{max_retries})")
+            _write_judge_log(f"No judge_tool call, retry {retry_count}/{max_retries}")
 
-        _write_judge_log("Could not determine verdict, returning (False, '')")
+            # Add LLM response to messages for context
+            for block in response.content:
+                if hasattr(block, 'text'):
+                    messages.append({"role": "assistant", "content": block.text})
+                    messages.append({"role": "user", "content": f"你没有使用 judge_tool，这是第 {retry_count} 次提醒。请使用 judge_tool 提交评估结果，格式：verdict=\"pass\"或\"fail\"，confidence=0.0-1.0，advice=下一步指导。"})
+                    break
+
+        _write_judge_log(f"Max retries ({max_retries}) reached, returning (False, '')")
         return False, ""
 
     except Exception as e:

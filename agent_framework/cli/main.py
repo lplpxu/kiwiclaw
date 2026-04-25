@@ -12,7 +12,7 @@ from rich.syntax import Syntax
 if sys.platform == 'win32':
     os.system('chcp 65001 > nul 2>&1')
 
-console = Console(legacy_windows=False)
+console = Console(legacy_windows=True)
 app = typer.Typer(help="Agent Framework CLI", invoke_without_command=True)
 
 
@@ -31,8 +31,26 @@ def run(
 ):
     """Run an agent with a prompt"""
     async def _run():
-        from ..core import Agent, AgentConfig, DockerSandbox, SandboxConfig, ToolRegistry
+        from ..core import Agent, AgentConfig, DockerSandbox, SandboxConfig
+        from ..core.bootstrap import Bootstrap, BootstrapConfig
 
+        # Use Bootstrap for proper initialization (参考 hermes-agent gateway/run.py)
+        bootstrap = Bootstrap(BootstrapConfig(
+            init_tracing=True,
+            init_metrics=True,
+            load_skills=True,
+        ))
+
+        console.print("[cyan]Initializing agent framework...[/cyan]")
+        bootstrap_result = await bootstrap.run()
+
+        if not bootstrap_result.success:
+            console.print(f"[red]Bootstrap failed: {bootstrap_result.error}[/red]")
+            return
+
+        console.print(f"[green]Bootstrap completed in {bootstrap_result.duration_ms:.1f}ms[/green]")
+
+        # Create agent with config from bootstrap
         config = AgentConfig(name="cli-agent", model=model, mode=mode)
         agent = Agent(name="cli-agent", config=config)
 
@@ -42,8 +60,11 @@ def run(
             console.print("[yellow]Sandbox created[/yellow]")
 
         result = await agent.think(prompt)
-        # Strip non-ASCII characters for Windows console compatibility
-        result_clean = result.encode('ascii', 'replace').decode('ascii')
+
+        # Fix Windows console encoding for Unicode
+        result_clean = result
+        if sys.platform == 'win32':
+            result_clean = result.encode('utf-8', 'replace').decode('utf-8', 'replace')
         console.print(Panel(result_clean, title="Agent Response", border_style="green"))
 
         if sandbox:

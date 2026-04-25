@@ -18,6 +18,7 @@ class AgentConfig:
     tools: list = field(default_factory=list)
     sandbox_enabled: bool = False
     mode: str = "simple"  # simple, deep, plan, debug
+    permission_mode: str = "danger_full_access"  # read_only, workspace_write, danger_full_access, prompt
 
 
 @dataclass
